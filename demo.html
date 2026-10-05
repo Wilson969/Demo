@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Monster Shooter Demo</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #111;
+      font-family: Arial, sans-serif;
+    }
+
+    #ui {
+      position: fixed;
+      top: 15px;
+      left: 15px;
+      z-index: 10;
+      color: white;
+      font-size: 17px;
+      line-height: 1.6;
+      text-shadow: 2px 2px 4px black;
+      pointer-events: none;
+    }
+
+    #crosshair {
+      position: fixed;
+      z-index: 10;
+      top: 50%;
+      left: 50%;
+      width: 16px;
+      height: 16px;
+      transform: translate(-50%, -50%);
+      border: 2px solid white;
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    #startButton {
+      position: fixed;
+      z-index: 20;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 16px 30px;
+      border: none;
+      border-radius: 6px;
+      background: #2266aa;
+      color: white;
+      font-size: 20px;
+      cursor: pointer;
+    }
+
+    #startButton:hover {
+      background: #3388cc;
+    }
+
+    #message {
+      position: fixed;
+      z-index: 15;
+      top: 35%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-size: 30px;
+      text-align: center;
+      text-shadow: 2px 2px 5px black;
+      pointer-events: none;
+    }
+
+    #message small {
+      font-size: 18px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="ui">
+    WASD：移動<br>
+    滑鼠：轉動視角<br>
+    滑鼠右鍵：射擊<br>
+    綠色區域內按 F：回血<br><br>
+
+    玩家 HP：
+    <span id="playerHP">100</span>
+    /
+    <span id="maxPlayerHP">100</span>
+    <br>
+
+    怪物 HP：
+    <span id="enemyHP">100</span>
+  </div>
+
+  <div id="crosshair"></div>
+  <button id="startButton">開始遊戲</button>
+  <div id="message"></div>
+
+  <!-- Three.js -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+  <script>
+    // =====================================
+    // 場景
+    // =====================================
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87b5d8);
+
+    const camera = new THREE.PerspectiveCamera(
+      75,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1000
+    );
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true
+    });
+
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+
+    document.body.appendChild(renderer.domElement);
+
+
+    // =====================================
+    // 光線
+    // =====================================
+
+    const ambientLight = new THREE.AmbientLight(
+      0xffffff,
+      0.6
+    );
+
+    scene.add(ambientLight);
+
+    const sunlight = new THREE.DirectionalLight(
+      0xffffff,
+      1.2
+    );
+
+    sunlight.position.set(10, 20, 10);
+    sunlight.castShadow = true;
+
+    scene.add(sunlight);
+
+
+    // =====================================
+    // 地面
+    // =====================================
+
+    const ground = new THREE.Mesh(
+      new THREE.BoxGeometry(60, 0.2, 60),
+      new THREE.MeshStandardMaterial({
+        color: 0x5c914d
+      })
+    );
+
+    ground.position.set(0, -0.1, 0);
+    ground.receiveShadow = true;
+
+    scene.add(ground);
+
+
+    // =====================================
+    // 牆壁
+    // =====================================
+
+    const walls = [];
+
+    function createWall(x, y, z, width, height, depth) {
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(width, height, depth),
+        new THREE.MeshStandardMaterial({
+          color: 0x666666
+        })
+      );
+
+      wall.position.set(x, y, z);
+      wall.castShadow = true;
+      wall.receiveShadow = true;
+
+      scene.add(wall);
+      walls.push(wall);
+
+      return wall;
+    }
+
+    /*
+      注意：
+      這些牆壁不會完全封鎖玩家和怪物的初始視線。
+    */
+
+    createWall(-8, 2, 0, 0.6, 4, 12);
+    createWall(8, 2, 0, 0.6, 4, 12);
+    createWall(0, 2, -11, 10, 4, 0.6);
+    createWall(-5, 1.5, 5, 5, 3, 0.6);
+
+
+    // =====================================
+    // 回血區
+    // =====================================
+
+    const healingZone = {
+      x: -13,
+      z: 11,
+      radius: 3
+    };
+
+    const healingArea = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        healingZone.radius,
+        healingZone.radius,
+        0.08,
+        32
+      ),
+      new THREE.MeshStandardMaterial({
+        color: 0x20dd66,
+        transparent: true,
+        opacity: 0.75
+      })
+    );
+
+    healingArea.position.set(
+      healingZone.x,
+      0.04,
+      healingZone.z
+    );
+
+    scene.add(healingArea);
+
+    const healingRing = new THREE.Mesh(
+      new THREE.RingGeometry(
+        healingZone.radius,
+        healingZone.radius + 0.15,
+        32
+      ),
+      new THREE.MeshBasicMaterial({
+        color: 0xaaffbb,
+        side: THREE.DoubleSide
+      })
+    );
+
+    healingRing.rotation.x = -Math.PI / 2;
+
+    healingRing.position.set(
+      healingZone.x,
+      0.1,
+      healingZone.z
+    );
+
+    scene.add(healingRing);
+
+
+    // =====================================
+    // 玩家
+    // =====================================
+
+    const player = {
+      hp: 100,
+      maxHp: 100,
+      speed: 6
+    };
+
+    const playerObject = new THREE.Object3D();
+
+    playerObject.position.set(
+      0,
+      1.7,
+      12
+    );
+
+    scene.add(playerObject);
+
+    playerObject.add(camera);
+
+    camera.position.set(0, 0, 0);
+
+    let yaw = 0;
+    let pitch = 0;
+
+
+    // =====================================
+    // 怪物
+    // =====================================
+
+    const enemy = {
+      hp: 100,
+      maxHp: 100,
+      speed: 1.5,
+      alive: true,
+
+      // 近身攻擊
+      meleeDamage: 10,
+      meleeInterval: 1,
+      meleeTimer: 0,
+
+      // 遠程攻擊
+      rangedDamage: 15,
+      rangedInterval: 2,
+      rangedTimer: 0,
+      rangedDistance: 25
+    };
+
+    const enemyObject = new THREE.Mesh(
+      new THREE.SphereGeometry(1.2, 24, 16),
+      new THREE.MeshStandardMaterial({
+        color: 0xb83232,
+        roughness: 0.8
+      })
+    );
+
+    // 怪物初始位置
+    enemyObject.position.set(
+      0,
+      1.2,
+      -5
+    );
+
+    enemyObject.castShadow = true;
+    enemyObject.receiveShadow = true;
+
+    scene.add(enemyObject);
+
+
+    // 怪物眼睛
+    const eyeMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffff00
+    });
+
+    const leftEye = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 12, 12),
+      eyeMaterial
+    );
+
+    const rightEye = leftEye.clone();
+
+    leftEye.position.set(-0.4, 0.35, -1.05);
+    rightEye.position.set(0.4, 0.35, -1.05);
+
+    enemyObject.add(leftEye);
+    enemyObject.add(rightEye);
+
+
+    // =====================================
+    // 遊戲變數
+    // =====================================
+
+    const keys = {};
+    const enemyProjectiles = [];
+
+    let shootCooldown = 0;
+    let gameOver = false;
+
+    const playerHPText = document.getElementById("playerHP");
+    const maxPlayerHPText = document.getElementById("maxPlayerHP");
+    const enemyHPText = document.getElementById("enemyHP");
+    const startButton = document.getElementById("startButton");
+    const message = document.getElementById("message");
+
+    maxPlayerHPText.textContent = player.maxHp;
+
+
+    // =====================================
+    // 鍵盤
+    // =====================================
+
+    window.addEventListener("keydown", function(event) {
+      const key = event.key.toLowerCase();
+
+      keys[key] = true;
+
+      if (key === "f") {
+        healPlayer();
+      }
+
+      if (key === "r" && gameOver) {
+        restartGame();
+      }
+    });
+
+    window.addEventListener("keyup", function(event) {
+      keys[event.key.toLowerCase()] = false;
+    });
+
+
+    // =====================================
+    // 滑鼠視角
+    // =====================================
+
+    startButton.addEventListener("click", function() {
+      document.body.requestPointerLock();
+    });
+
+    document.addEventListener("pointerlockchange", function() {
+      if (document.pointerLockElement === document.body) {
+        startButton.style.display = "none";
+      } else if (!gameOver) {
+        startButton.style.display = "block";
+        startButton.textContent = "繼續遊戲";
+      }
+    });
+
+    document.addEventListener("mousemove", function(event) {
+      if (document.pointerLockElement !== document.body) {
+        return;
+      }
+
+      yaw -= event.movementX * 0.002;
+      pitch -= event.movementY * 0.002;
+
+      pitch = Math.max(
+        -1.4,
+        Math.min(1.4, pitch)
+      );
+
+      playerObject.rotation.y = yaw;
+      camera.rotation.x = pitch;
+    });
+
+
+    // =====================================
+    // 右鍵射擊
+    // =====================================
+
+    document.addEventListener("contextmenu", function(event) {
+      event.preventDefault();
+    });
+
+    document.addEventListener("mousedown", function(event) {
+      if (event.button === 2) {
+        shoot();
+      }
+    });
+
+
+    // =====================================
+    // 碰撞
+    // =====================================
+
+    function isPlayerBlocked(position) {
+      const playerBox = new THREE.Box3().setFromCenterAndSize(
+        position,
+        new THREE.Vector3(1, 2, 1)
+      );
+
+      for (const wall of walls) {
+        const wallBox = new THREE.Box3().setFromObject(wall);
+
+        if (playerBox.intersectsBox(wallBox)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    function isEnemyBlocked(position) {
+      const enemyBox = new THREE.Box3().setFromCenterAndSize(
+        position,
+        new THREE.Vector3(2.2, 2.4, 2.2)
+      );
+
+      for (const wall of walls) {
+        const wallBox = new THREE.Box3().setFromObject(wall);
+
+        if (enemyBox.intersectsBox(wallBox)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+
+    // =====================================
+    // 玩家移動
+    // =====================================
+
+    function movePlayer(deltaTime) {
+      if (gameOver) return;
+
+      if (document.pointerLockElement !== document.body) {
+        return;
+      }
+
+      const oldPosition = playerObject.position.clone();
+
+      if (keys["w"]) {
+        playerObject.translateZ(
+          -player.speed * deltaTime
+        );
+      }
+
+      if (keys["s"]) {
+        playerObject.translateZ(
+          player.speed * deltaTime
+        );
+      }
+
+      if (keys["a"]) {
+        playerObject.translateX(
+          -player.speed * deltaTime
+        );
+      }
+
+      if (keys["d"]) {
+        playerObject.translateX(
+          player.speed * deltaTime
+        );
+      }
+
+      playerObject.position.y = 1.7;
+
+      playerObject.position.x = THREE.MathUtils.clamp(
+        playerObject.position.x,
+        -28,
+        28
+      );
+
+      playerObject.position.z = THREE.MathUtils.clamp(
+        playerObject.position.z,
+        -28,
+        28
+      );
+
+      if (isPlayerBlocked(playerObject.position)) {
+        playerObject.position.copy(oldPosition);
+      }
+    }
+
+
+    // =====================================
+    // 回血
+    // =====================================
+
+    function isInsideHealingZone() {
+      const dx =
+        playerObject.position.x - healingZone.x;
+
+      const dz =
+        playerObject.position.z - healingZone.z;
+
+      const distance = Math.sqrt(
+        dx * dx + dz * dz
+      );
+
+      return distance <= healingZone.radius;
+    }
+
+    function healPlayer() {
+      if (gameOver) return;
+
+      if (!isInsideHealingZone()) {
+        showMessage("你不在回血區內", 700);
+        return;
+      }
+
+      if (player.hp >= player.maxHp) {
+        showMessage("你的血量已滿", 700);
+        return;
+      }
+
+      const healAmount = 30;
+
+      player.hp = Math.min(
+        player.maxHp,
+        player.hp + healAmount
+      );
+
+      playerHPText.textContent = player.hp;
+
+      showMessage("回血成功！", 700);
+    }
+
+
+    // =====================================
+    // 顯示訊息
+    // =====================================
+
+    let messageTimer = null;
+
+    function showMessage(text, duration) {
+      message.textContent = text;
+
+      clearTimeout(messageTimer);
+
+      messageTimer = setTimeout(function() {
+        if (!gameOver) {
+          message.textContent = "";
+        }
+      }, duration);
+    }
+
+
+    // =====================================
+    // 玩家射擊
+    // =====================================
+
+    function shoot() {
+      if (gameOver) return;
+      if (!enemy.alive) return;
+      if (shootCooldown > 0) return;
+
+      if (document.pointerLockElement !== document.body) {
+        return;
+      }
+
+      shootCooldown = 0.25;
+
+      const raycaster = new THREE.Raycaster();
+
+      raycaster.setFromCamera(
+        new THREE.Vector2(0, 0),
+        camera
+      );
+
+      const enemyHits = raycaster.intersectObject(
+        enemyObject,
+        true
+      );
+
+      if (enemyHits.length === 0) {
+        return;
+      }
+
+      const wallHits = raycaster.intersectObjects(
+        walls,
+        false
+      );
+
+      const enemyDistance = enemyHits[0].distance;
+
+      if (
+        wallHits.length > 0 &&
+        wallHits[0].distance < enemyDistance
+      ) {
+        showMessage("牆壁擋住了攻擊！", 500);
+        return;
+      }
+
+      enemy.hp -= 25;
+      enemy.hp = Math.max(0, enemy.hp);
+
+      enemyHPText.textContent = enemy.hp;
+
+      showMessage("命中怪物！", 300);
+
+      if (enemy.hp <= 0) {
+        killEnemy();
+      }
+    }
+
+    function killEnemy() {
+      enemy.alive = false;
+
+      scene.remove(enemyObject);
+
+      clearEnemyProjectiles();
+
+      gameOver = true;
+
+      message.innerHTML =
+        "怪物被擊倒！<br><small>按 R 重新開始</small>";
+
+      document.exitPointerLock();
+    }
+
+
+    // =====================================
+    // 怪物視線
+    // =====================================
+
+    function enemyCanSeePlayer() {
+      const start = enemyObject.position.clone();
+      const end = playerObject.position.clone();
+
+      start.y = 1.2;
+      end.y = 1.4;
+
+      const direction = new THREE.Vector3()
+        .subVectors(end, start)
+        .normalize();
+
+      const distance = start.distanceTo(end);
+
+      const raycaster = new THREE.Raycaster(
+        start,
+        direction,
+        0,
+        distance
+      );
+
+      const wallHits = raycaster.intersectObjects(
+        walls,
+        false
+      );
+
+      return wallHits.length === 0;
+    }
+
+
+    // =====================================
+    // 怪物遠程攻擊
+    // =====================================
+
+    function enemyShoot() {
+      if (!enemy.alive || gameOver) {
+        return;
+      }
+
+      const start = enemyObject.position.clone();
+      const target = playerObject.position.clone();
+
+      start.y = 1.2;
+      target.y = 1.4;
+
+      const direction = new THREE.Vector3()
+        .subVectors(target, start)
+        .normalize();
+
+      const projectile = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 16, 16),
+        new THREE.MeshBasicMaterial({
+          color: 0xff4400
+        })
+      );
+
+      projectile.position.copy(start);
+
+      projectile.userData.direction = direction;
+      projectile.userData.speed = 8;
+      projectile.userData.damage = enemy.rangedDamage;
+      projectile.userData.life = 5;
+
+      scene.add(projectile);
+      enemyProjectiles.push(projectile);
+    }
+
+    function updateEnemyProjectiles(deltaTime) {
+      for (
+        let i = enemyProjectiles.length - 1;
+        i >= 0;
+        i--
+      ) {
+        const projectile = enemyProjectiles[i];
+
+        const movement =
+          projectile.userData.direction.clone()
+            .multiplyScalar(
+              projectile.userData.speed * deltaTime
+            );
+
+        projectile.position.add(movement);
+
+        projectile.userData.life -= deltaTime;
+
+        let removeProjectile = false;
+
+        // 碰到牆壁
+        for (const wall of walls) {
+          const wallBox = new THREE.Box3()
+            .setFromObject(wall);
+
+          if (wallBox.containsPoint(projectile.position)) {
+            removeProjectile = true;
+            break;
+          }
+        }
+
+        // 碰到玩家
+        const distanceToPlayer =
+          projectile.position.distanceTo(
+            playerObject.position
+          );
+
+        if (distanceToPlayer < 1.1) {
+          player.hp -= projectile.userData.damage;
+          player.hp = Math.max(0, player.hp);
+
+          playerHPText.textContent = player.hp;
+
+          showMessage(
+            "你被怪物的火球擊中了！",
+            600
+          );
+
+          removeProjectile = true;
+
+          if (player.hp <= 0) {
+            playerDie();
+          }
+        }
+
+        // 超過存在時間
+        if (projectile.userData.life <= 0) {
+          removeProjectile = true;
+        }
+
+        if (removeProjectile) {
+          scene.remove(projectile);
+          enemyProjectiles.splice(i, 1);
+        }
+      }
+    }
+
+    function clearEnemyProjectiles() {
+      for (const projectile of enemyProjectiles) {
+        scene.remove(projectile);
+      }
+
+      enemyProjectiles.length = 0;
+    }
+
+
+    // =====================================
+    // 怪物 AI
+    // =====================================
+
+    function updateEnemy(deltaTime) {
+      if (!enemy.alive || gameOver) {
+        return;
+      }
+
+      const target = playerObject.position.clone();
+
+      target.y = enemyObject.position.y;
+
+      const direction = new THREE.Vector3()
+        .subVectors(target, enemyObject.position);
+
+      const distance = direction.length();
+
+      enemyObject.lookAt(
+        target.x,
+        enemyObject.position.y,
+        target.z
+      );
+
+      const canSeePlayer = enemyCanSeePlayer();
+
+      /*
+        距離超過 10 時追蹤玩家。
+        如果怪物在牆後，這個簡易版本不會繞牆。
+      */
+      if (distance > 10 && canSeePlayer) {
+        direction.normalize();
+
+        const oldPosition =
+          enemyObject.position.clone();
+
+        enemyObject.position.x +=
+          direction.x * enemy.speed * deltaTime;
+
+        enemyObject.position.z +=
+          direction.z * enemy.speed * deltaTime;
+
+        if (isEnemyBlocked(enemyObject.position)) {
+          enemyObject.position.copy(oldPosition);
+        }
+      }
+
+      // 遠程攻擊
+      if (
+        distance <= enemy.rangedDistance &&
+        distance > 3 &&
+        canSeePlayer
+      ) {
+        enemy.rangedTimer -= deltaTime;
+
+        if (enemy.rangedTimer <= 0) {
+          enemyShoot();
+          enemy.rangedTimer = enemy.rangedInterval;
+        }
+      }
+
+      // 近身攻擊
+      if (
+        distance <= 2.8 &&
+        canSeePlayer
+      ) {
+        enemy.meleeTimer -= deltaTime;
+
+        if (enemy.meleeTimer <= 0) {
+          player.hp -= enemy.meleeDamage;
+          player.hp = Math.max(0, player.hp);
+
+          enemy.meleeTimer = enemy.meleeInterval;
+
+          playerHPText.textContent = player.hp;
+
+          showMessage(
+            "你被怪物近身攻擊了！",
+            500
+          );
+
+          if (player.hp <= 0) {
+            playerDie();
+          }
+        }
+      }
+    }
+
+
+    // =====================================
+    // 玩家死亡
+    // =====================================
+
+    function playerDie() {
+      if (gameOver) return;
+
+      player.hp = 0;
+      playerHPText.textContent = "0";
+
+      gameOver = true;
+
+      message.innerHTML =
+        "你被怪物擊倒了！<br><small>按 R 重新開始</small>";
+
+      document.exitPointerLock();
+    }
+
+
+    // =====================================
+    // 重新開始
+    // =====================================
+
+    function restartGame() {
+      clearEnemyProjectiles();
+
+      player.hp = player.maxHp;
+
+      enemy.hp = enemy.maxHp;
+      enemy.alive = true;
+      enemy.meleeTimer = 0;
+      enemy.rangedTimer = 0;
+
+      playerObject.position.set(
+        0,
+        1.7,
+        12
+      );
+
+      enemyObject.position.set(
+        0,
+        1.2,
+        -5
+      );
+
+      playerHPText.textContent = player.hp;
+      enemyHPText.textContent = enemy.hp;
+
+      shootCooldown = 0;
+      gameOver = false;
+
+      message.textContent = "";
+
+      scene.add(enemyObject);
+
+      startButton.style.display = "block";
+      startButton.textContent = "開始遊戲";
+    }
+
+
+    // =====================================
+    // 遊戲主迴圈
+    // =====================================
+
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const deltaTime = Math.min(
+        clock.getDelta(),
+        0.05
+      );
+
+      if (shootCooldown > 0) {
+        shootCooldown -= deltaTime;
+      }
+
+      movePlayer(deltaTime);
+      updateEnemy(deltaTime);
+      updateEnemyProjectiles(deltaTime);
+
+      healingRing.rotation.z += deltaTime;
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+
+    // =====================================
+    // 視窗大小
+    // =====================================
+
+    window.addEventListener("resize", function() {
+      camera.aspect =
+        window.innerWidth / window.innerHeight;
+
+      camera.updateProjectionMatrix();
+
+      renderer.setSize(
+        window.innerWidth,
+        window.innerHeight
+      );
+    });
+  </script>
+
+</body>
+</html>
+
